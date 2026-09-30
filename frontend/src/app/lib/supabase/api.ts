@@ -1,6 +1,8 @@
+// import { createClient } from "@/lib/supabase/client";
 import { createClient } from "./client";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 export async function apiFetch(
   endpoint: string,
@@ -10,9 +12,10 @@ export async function apiFetch(
 
   const {
     data: { session },
+    error: sessionError,
   } = await supabase.auth.getSession();
 
-  if (!session?.access_token) {
+  if (sessionError || !session?.access_token) {
     throw new Error("User is not authenticated");
   }
 
