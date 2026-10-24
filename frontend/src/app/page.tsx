@@ -1,3 +1,4 @@
+
 "use client";
 
 import { createClient } from "./lib/supabase/client";
@@ -6,14 +7,17 @@ export default function Home() {
   const supabase = createClient();
 
   const handleGoogleLogin = async () => {
-    await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+
+    if (error) {
+      console.error("Google login failed:", error.message);
+    }
   };
-  
 
   return (
     <main className="flex min-h-screen items-center justify-center">
@@ -23,6 +27,7 @@ export default function Home() {
         </h1>
 
         <button
+          type="button"
           onClick={handleGoogleLogin}
           className="rounded-lg border px-6 py-3"
         >
