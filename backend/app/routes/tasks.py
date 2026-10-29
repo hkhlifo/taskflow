@@ -1,78 +1,75 @@
+
 from flask import Blueprint, jsonify, request
 
 from app.auth import require_auth
-from app.supabase_client import supabase
 from app.email import send_email
+from app.supabase_client import supabase
 
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/api/tasks")
+
+ALLOWED_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "URGENT"}
+ALLOWED_STATUSES = {"TODO", "IN_PROGRESS", "COMPLETED"}
+MAX_TITLE_LENGTH = 200
 
 
 @tasks_bp.get("")
 @require_auth
 def get_tasks():
-    user_id = request.current_user.id
+    """Retrieve tasks created by or assigned to the current user."""
+    current_user_id = request.current_user.id
 
     response = (
-        supabase
-        .table("tasks")
+        supabase.table("tasks")
         .select("*")
-        .or_(f"created_by.eq.{user_id},assigned_to.eq.{user_id}")
+        .or_(
+            f"created_by.eq.{current_user_id},"
+            f"assigned_to.eq.{current_user_id}"
+        )
         .order("created_at", desc=True)
         .execute()
     )
 
-    return jsonify({
-        "tasks": response.data or []
-    }), 200
+    return jsonify({"tasks": response.data or []}), 200
 
 
 @tasks_bp.post("")
 @require_auth
 def create_task():
-    user_id = request.current_user.id
+    """Create a task and notify the assigned user."""
+    current_user_id = request.current_user.id
     data = request.get_json(silent=True) or {}
 
-    title = data.get("title", "").strip()
+    title = data.get("title", "")
+    title = title.strip() if isinstance(title, str) else ""
+
     description = data.get("description")
     priority = data.get("priority", "MEDIUM")
     assigned_to = data.get("assigned_to")
     due_date = data.get("due_date")
 
     if not title:
-        return jsonify({
-            "error": "Task title is required"
-        }), 400
+        return jsonify({"error": "Task title is required"}), 400
 
-    if len(title) > 200:
+    if len(title) > MAX_TITLE_LENGTH:
         return jsonify({
             "error": "Task title must be 200 characters or less"
         }), 400
 
-    allowed_priorities = {
-        "LOW",
-        "MEDIUM",
-        "HIGH",
-        "URGENT",
-    }
-
-    if priority not in allowed_priorities:
-        return jsonify({
-            "error": "Invalid priority"
-        }), 400
+    if priority not in ALLOWED_PRIORITIES:
+        return jsonify({"error": "Invalid priority"}), 400
 
     task_data = {
         "title": title,
         "description": description,
         "priority": priority,
-        "created_by": user_id,
+        "created_by": current_user_id,
         "assigned_to": assigned_to,
         "due_date": due_date,
     }
 
     response = (
-        supabase
-        .table("tasks")
+        supabase.table("tasks")
         .insert(task_data)
         .execute()
     )
@@ -80,15 +77,11 @@ def create_task():
     task = response.data[0] if response.data else None
 
     if not task:
-        return jsonify({
-            "error": "Failed to create task"
-        }), 500
+        return jsonify({"error": "Failed to create task"}), 500
 
-    # Send notification to assigned user
     if assigned_to:
         user_response = (
-            supabase
-            .table("profiles")
+            supabase.table("profiles")
             .select("email, full_name")
             .eq("id", assigned_to)
             .execute()
@@ -104,34 +97,28 @@ def create_task():
             send_email(
                 recipient=assigned_user["email"],
                 subject=f"New Task Assigned: {task['title']}",
-                body=f"""Hi {assigned_user.get("full_name") or "there"},
-
-You have been assigned a new task in TaskFlow.
-
-Task: {task["title"]}
-Priority: {task["priority"]}
-
-Please log in to TaskFlow to view the task.
-
-— TaskFlow
-""",
+                body=(
+                    f"Hi {assigned_user.get('full_name') or 'there'},\n\n"
+                    "You have been assigned a new task in TaskFlow.\n\n"
+                    f"Task: {task['title']}\n"
+                    f"Priority: {task['priority']}\n\n"
+                    "Please log in to TaskFlow to view the task.\n\n"
+                    "— TaskFlow"
+                ),
             )
 
-    return jsonify({
-        "task": task
-    }), 201
+    return jsonify({"task": task}), 201
 
 
 @tasks_bp.patch("/<task_id>")
 @require_auth
 def update_task(task_id):
-    user_id = request.current_user.id
+    """Update a task and notify its creator when completed."""
+    current_user_id = request.current_user.id
     data = request.get_json(silent=True) or {}
 
-    # Find the task
     existing_response = (
-        supabase
-        .table("tasks")
+        supabase.table("tasks")
         .select("*")
         .eq("id", task_id)
         .execute()
@@ -140,16 +127,13 @@ def update_task(task_id):
     existing_tasks = existing_response.data or []
 
     if not existing_tasks:
-        return jsonify({
-            "error": "Task not found"
-        }), 404
+        return jsonify({"error": "Task not found"}), 404
 
     existing_task = existing_tasks[0]
 
-    # Check authorization
     if (
-        existing_task["created_by"] != user_id
-        and existing_task["assigned_to"] != user_id
+        existing_task["created_by"] != current_user_id
+        and existing_task["assigned_to"] != current_user_id
     ):
         return jsonify({
             "error": "You are not authorized to update this task"
@@ -157,67 +141,46 @@ def update_task(task_id):
 
     updates = {}
 
-    # Update title
     if "title" in data:
-        title = str(data["title"]).strip()
+        title = data["title"]
 
-        if not title:
+        if not isinstance(title, str) or not title.strip():
             return jsonify({
                 "error": "Task title cannot be empty"
             }), 400
 
-        if len(title) > 200:
+        title = title.strip()
+
+        if len(title) > MAX_TITLE_LENGTH:
             return jsonify({
                 "error": "Task title must be 200 characters or less"
             }), 400
 
         updates["title"] = title
 
-    # Update description
     if "description" in data:
         updates["description"] = data["description"]
 
-    # Update priority
     if "priority" in data:
-        allowed_priorities = {
-            "LOW",
-            "MEDIUM",
-            "HIGH",
-            "URGENT",
-        }
-
-        if data["priority"] not in allowed_priorities:
-            return jsonify({
-                "error": "Invalid priority"
-            }), 400
+        if data["priority"] not in ALLOWED_PRIORITIES:
+            return jsonify({"error": "Invalid priority"}), 400
 
         updates["priority"] = data["priority"]
 
-    # Update status
     if "status" in data:
-        allowed_statuses = {
-            "TODO",
-            "IN_PROGRESS",
-            "COMPLETED",
-        }
+        status = data["status"]
 
-        if data["status"] not in allowed_statuses:
-            return jsonify({
-                "error": "Invalid status"
-            }), 400
+        if status not in ALLOWED_STATUSES:
+            return jsonify({"error": "Invalid status"}), 400
 
-        updates["status"] = data["status"]
+        updates["status"] = status
+        updates["completed_at"] = (
+            "now()" if status == "COMPLETED" else None
+        )
 
-        if data["status"] == "COMPLETED":
-            updates["completed_at"] = "now()"
-        else:
-            updates["completed_at"] = None
-
-    # Update due date
     if "due_date" in data:
         updates["due_date"] = data["due_date"]
 
-    # Update assigned user
     if "assigned_to" in data:
         updates["assigned_to"] = data["assigned_to"]
 
@@ -227,8 +190,7 @@ def update_task(task_id):
         }), 400
 
     response = (
-        supabase
-        .table("tasks")
+        supabase.table("tasks")
         .update(updates)
         .eq("id", task_id)
         .execute()
@@ -237,19 +199,17 @@ def update_task(task_id):
     updated_task = response.data[0] if response.data else None
 
     if not updated_task:
-        return jsonify({
-            "error": "Failed to update task"
-        }), 500
+        return jsonify({"error": "Failed to update task"}), 500
 
-    # Send completion notification to task creator
-    if (
+    task_completed = (
         data.get("status") == "COMPLETED"
         and existing_task["status"] != "COMPLETED"
-        and existing_task["created_by"] != user_id
-    ):
+        and existing_task["created_by"] != current_user_id
+    )
+
+    if task_completed:
         creator_response = (
-            supabase
-            .table("profiles")
+            supabase.table("profiles")
             .select("email, full_name")
             .eq("id", existing_task["created_by"])
             .execute()
@@ -265,34 +225,28 @@ def update_task(task_id):
             send_email(
                 recipient=creator["email"],
                 subject=f"Task Completed: {updated_task['title']}",
-                body=f"""Hi {creator.get("full_name") or "there"},
-
-Your task has been completed in TaskFlow.
-
-Task: {updated_task["title"]}
-Priority: {updated_task["priority"]}
-
-The assigned user has marked this task as completed.
-
-— TaskFlow
-""",
+                body=(
+                    f"Hi {creator.get('full_name') or 'there'},\n\n"
+                    "Your task has been completed in TaskFlow.\n\n"
+                    f"Task: {updated_task['title']}\n"
+                    f"Priority: {updated_task['priority']}\n\n"
+                    "The assigned user has marked this task as completed.\n\n"
+                    "— TaskFlow"
+                ),
             )
 
-    return jsonify({
-        "task": updated_task
-    }), 200
+    return jsonify({"task": updated_task}), 200
 
 
 @tasks_bp.delete("/<task_id>")
 @require_auth
 def delete_task(task_id):
-    user_id = request.current_user.id
+    """Delete a task created by the current user."""
+    current_user_id = request.current_user.id
 
-    # Find the task
     existing_response = (
-        supabase
-        .table("tasks")
-        .select("*")
+        supabase.table("tasks")
+        .select("id, created_by")
         .eq("id", task_id)
         .execute()
     )
@@ -300,21 +254,17 @@ def delete_task(task_id):
     existing_tasks = existing_response.data or []
 
     if not existing_tasks:
-        return jsonify({
-            "error": "Task not found"
-        }), 404
+        return jsonify({"error": "Task not found"}), 404
 
     existing_task = existing_tasks[0]
 
-    # Only creator can delete
-    if existing_task["created_by"] != user_id:
+    if existing_task["created_by"] != current_user_id:
         return jsonify({
             "error": "Only the task creator can delete this task"
         }), 403
 
     (
-        supabase
-        .table("tasks")
+        supabase.table("tasks")
         .delete()
         .eq("id", task_id)
         .execute()
